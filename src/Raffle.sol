@@ -32,7 +32,7 @@ import {VRFV2PlusClient} from "@chainlink/contracts/src/v0.8/vrf/dev/libraries/V
  * @dev Implements Chainlink VRFv2.5
  */
 
-contract Ruffle is VRFConsumerBaseV2Plus {
+contract Raffle is VRFConsumerBaseV2Plus {
     /* Errors */
     error Raffle__SendMoreToEnterRuffle();
     error Raffle__TransferFailed();
