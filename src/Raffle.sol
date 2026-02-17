@@ -37,6 +37,11 @@ contract Ruffle is VRFConsumerBaseV2Plus {
     error Raffle__SendMoreToEnterRuffle();
     error Raffle__TransferFailed();
     error Raffle__NotOpen();
+    error Raffle__UpkeepNotNeeded(
+        uint256 balance,
+        uint256 playersLength,
+        uint256 raffleState
+    );
 
     /* Type Declarations */
     enum RaffleState {
@@ -86,24 +91,59 @@ contract Ruffle is VRFConsumerBaseV2Plus {
         emit RaffleEntered(msg.sender);
     }
 
-    function pickWinner() external {
-        if (block.timestamp - s_lastTimeStamp < i_interval) revert();
-        s_raffleState = RaffleState.CALCULATING;
-        VRFV2PlusClient.RandomWordsRequest memory request = VRFV2PlusClient.RandomWordsRequest({
-            keyHash: i_keyHash,
-            subId: i_subscriptionId,
-            requestConfirmations: REQUEST_CONFIRMATIONS,
-            callbackGasLimit: i_callbackGasLimit,
-            numWords: NUM_WORDS,
-            extraArgs: VRFV2PlusClient._argsToBytes(
-                // Set nativePayment to true to pay for VRF requests with Sepolia ETH instead of LINK
-                VRFV2PlusClient.ExtraArgsV1({nativePayment: false})
-            )
-        });
-        uint256 requestId = s_vrfCoordinator.requestRandomWords(request);
+    /**
+     * @dev This is the function that the Chainlink nodes will call to see
+     * if the lottery is ready to have a winner picked.
+     * The following should be true in order for upkeepNeeded to be true:
+     * 1. The time interval has passed betwwen raffle runs
+     * 2. The lottery is open
+     * 3. The contract has ETH
+     * 4. Implicitly, your subscription has LINK
+     * @param - ignored
+     * @return upkeepNeeded - true if its time to restart the lottery
+     * @return - ignored
+     */
+    function checkUpkeep(
+        bytes memory /* callData */
+    ) public view returns (bool upkeepNeeded, bytes memory /* performData */) {
+        bool timeHasPassed = ((block.timestamp - s_lastTimeStamp) >=
+            i_interval);
+        bool isOpen = s_raffleState == RaffleState.OPEN;
+        bool hasBalance = address(this).balance > 0;
+        bool hasPlayers = s_players.length > 0;
+
+        upkeepNeeded = timeHasPassed && isOpen && hasBalance && hasPlayers;
+        return (upkeepNeeded, "");
     }
 
-    function fulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) internal override {
+    function performUpkeep(bytes calldata /* performData */) external {
+        (bool upKeepNeeded, ) = checkUpkeep("");
+        if (!upKeepNeeded)
+            revert Raffle__UpkeepNotNeeded(
+                address(this).balance,
+                s_players.length,
+                uint256(s_raffleState)
+            );
+        s_raffleState = RaffleState.CALCULATING;
+        VRFV2PlusClient.RandomWordsRequest memory request = VRFV2PlusClient
+            .RandomWordsRequest({
+                keyHash: i_keyHash,
+                subId: i_subscriptionId,
+                requestConfirmations: REQUEST_CONFIRMATIONS,
+                callbackGasLimit: i_callbackGasLimit,
+                numWords: NUM_WORDS,
+                extraArgs: VRFV2PlusClient._argsToBytes(
+                    // Set nativePayment to true to pay for VRF requests with Sepolia ETH instead of LINK
+                    VRFV2PlusClient.ExtraArgsV1({nativePayment: false})
+                )
+            });
+        s_vrfCoordinator.requestRandomWords(request);
+    }
+
+    function fulfillRandomWords(
+        uint256 /* requestId */,
+        uint256[] calldata randomWords
+    ) internal override {
         uint256 indexOfWinner = randomWords[0] % s_players.length;
         address payable recentWinner = s_players[indexOfWinner];
         s_recentWinner = recentWinner;
@@ -111,7 +151,7 @@ contract Ruffle is VRFConsumerBaseV2Plus {
         s_raffleState = RaffleState.OPEN;
         s_lastTimeStamp = block.timestamp;
         emit WinnerPicked(s_recentWinner);
-        (bool success,) = recentWinner.call{value: address(this).balance}("");
+        (bool success, ) = recentWinner.call{value: address(this).balance}("");
         if (!success) {
             revert Raffle__TransferFailed();
         }
